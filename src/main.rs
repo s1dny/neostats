@@ -274,6 +274,7 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
     
     // Progress bar background
     let bar_width = width - 2 * padding;
+    let bar_width_f64 = bar_width as f64;
     let bar_y = padding + title_height + progress_bar_margin;
     svg.push_str(&format!(
         "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"#f6f8fa\"/>",
@@ -297,15 +298,22 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
     
     // Progress bar segments
     let mut current_x = padding as f64;
+    let last_index = languages.len().saturating_sub(1);
     svg.push_str("<g clip-path=\"url(#progress-clip)\">");
-    for lang in languages {
-        let segment_width = (lang.percentage / 100.0) * bar_width as f64;
-        if segment_width > 0.5 { // Only show segments that are visible
+    for (index, lang) in languages.iter().enumerate() {
+        let mut segment_width = (lang.percentage / 100.0) * bar_width_f64;
+        if index == last_index {
+            let remaining = (padding as f64 + bar_width_f64) - current_x;
+            segment_width = remaining.max(0.0);
+        }
+
+        if segment_width > 0.5 || index == last_index {
             svg.push_str(&format!(
-                "<rect x=\"{:.1}\" y=\"{}\" width=\"{:.1}\" height=\"{}\" fill=\"{}\"/>",
+                "<rect x=\"{:.3}\" y=\"{}\" width=\"{:.3}\" height=\"{}\" fill=\"{}\"/>",
                 current_x, bar_y, segment_width, progress_bar_height, lang.color
             ));
         }
+
         current_x += segment_width;
     }
     svg.push_str("</g>");
