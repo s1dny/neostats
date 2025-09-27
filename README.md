@@ -2,7 +2,7 @@
 
 ![stats](img/stats.svg)
 
-#### A rust cli based alternative to [GitHub Readme Stats](https://github.com/anuraghazra/github-readme-stats)
+**A Rust CLI based alternative to [GitHub Readme Stats](https://github.com/anuraghazra/github-readme-stats)**
 
 ## Features
 
