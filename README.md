@@ -31,3 +31,10 @@ Load from existing YAML data (offline mode):
 ```bash
 neostats <username> --in stats.yaml --svg stats.svg
 ```
+
+Apply a different SVG theme (defaults to `light`):
+```bash
+neostats <username> --theme dark
+```
+
+Custom themes can be added under `themes/` as YAML files. Pass the theme name (without the `.yaml` extension) or a direct path to apply it.

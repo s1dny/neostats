@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 use tokio;
 
 #[derive(Parser)]
@@ -13,18 +14,22 @@ use tokio;
 struct Cli {
     /// GitHub username to analyze
     username: String,
-    
+
     /// Output SVG file path
     #[arg(short, long, default_value = "neostats.svg")]
     svg: String,
-    
+
     /// Save language data to YAML file
     #[arg(long)]
     out: Option<String>,
-    
+
     /// Load language data from YAML file (bypasses network requests)
     #[arg(long, value_name = "FILE")]
     r#in: Option<String>,
+
+    /// Theme to apply when generating the SVG (omit extension)
+    #[arg(short, long, default_value = "light")]
+    theme: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,32 +51,43 @@ struct LanguageStats {
     color: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct Theme {
+    header_color: String,
+    text_color: String,
+    background_fill: String,
+    border_color: String,
+    progress_background: String,
+    default_language_color: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+    let theme = load_theme(&cli.theme)?;
+
     let language_stats = if let Some(input_path) = &cli.r#in {
         // Load data from YAML file, bypassing network requests
         load_language_data(input_path)?
     } else {
         // Perform network requests to fetch data
         let client = Client::new();
-        
+
         // Fetch language colors from GitHub Linguist
         println!("Fetching language colors...");
         let language_colors = fetch_language_colors(&client).await?;
-        
+
         // Fetch all repositories for the user
         println!("Fetching repositories for user: {}", cli.username);
         let repositories = fetch_repositories(&client, &cli.username).await?;
-        
+
         // Filter out forks and fetch language data
         let non_fork_repos: Vec<_> = repositories.into_iter().filter(|repo| !repo.fork).collect();
         println!("Found {} non-fork repositories", non_fork_repos.len());
-        
+
         // Aggregate language statistics
         let mut language_totals: HashMap<String, u64> = HashMap::new();
-        
+
         for repo in &non_fork_repos {
             if let Ok(languages) = fetch_repository_languages(&client, &repo.languages_url).await {
                 for (language, bytes) in languages {
@@ -79,167 +95,172 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        
+
         // Calculate percentages and get top 10
         let total_bytes: u64 = language_totals.values().sum();
         if total_bytes == 0 {
             anyhow::bail!("No language data found for user {}", cli.username);
         }
-        
+
         let mut language_stats: Vec<LanguageStats> = language_totals
             .into_iter()
             .map(|(name, bytes)| LanguageStats {
                 percentage: (bytes as f64 / total_bytes as f64) * 100.0,
-                color: get_language_color(&name, &language_colors),
+                color: get_language_color(&name, &language_colors, &theme.default_language_color),
                 name,
             })
             .collect();
-        
+
         language_stats.sort_by(|a, b| b.percentage.partial_cmp(&a.percentage).unwrap());
         language_stats.truncate(10);
-        
+
         // Save data to YAML file if --out is specified
         if let Some(output_path) = &cli.out {
             save_language_data(&language_stats, &cli.username, output_path)?;
         }
-        
+
         language_stats
     };
-    
+
     // Generate SVG
-    let svg = generate_svg(&cli.username, &language_stats);
-    
+    let svg = generate_svg(&cli.username, &language_stats, &theme);
+
     // Write to file
     fs::write(&cli.svg, svg).context("Failed to write SVG file")?;
-    
+
     println!("SVG generated successfully: {}", cli.svg);
     println!("Top languages:");
     for lang in &language_stats {
         println!("  {}: {:.1}%", lang.name, lang.percentage);
     }
-    
+
     Ok(())
 }
 
 async fn fetch_repositories(client: &Client, username: &str) -> Result<Vec<Repository>> {
     let mut repositories = Vec::new();
     let mut page = 1;
-    
+
     loop {
         let url = format!(
             "https://api.github.com/users/{}/repos?page={}&per_page=100&type=owner",
             username, page
         );
-        
+
         let response = client
             .get(&url)
             .header("User-Agent", "neostats/1.0")
             .send()
             .await
             .context("Failed to fetch repositories")?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("GitHub API error: {}", response.status());
         }
-        
+
         let repos: Vec<Repository> = response
             .json()
             .await
             .context("Failed to parse repository JSON")?;
-        
+
         if repos.is_empty() {
             break;
         }
-        
+
         repositories.extend(repos);
         page += 1;
     }
-    
+
     Ok(repositories)
 }
 
-async fn fetch_repository_languages(client: &Client, languages_url: &str) -> Result<HashMap<String, u64>> {
+async fn fetch_repository_languages(
+    client: &Client,
+    languages_url: &str,
+) -> Result<HashMap<String, u64>> {
     let response = client
         .get(languages_url)
         .header("User-Agent", "neostats/1.0")
         .send()
         .await
         .context("Failed to fetch repository languages")?;
-    
+
     if !response.status().is_success() {
         return Ok(HashMap::new()); // Skip repositories we can't access
     }
-    
+
     let languages: HashMap<String, u64> = response
         .json()
         .await
         .context("Failed to parse languages JSON")?;
-    
+
     Ok(languages)
 }
 
 async fn fetch_language_colors(client: &Client) -> Result<HashMap<String, String>> {
     let url = "https://raw.githubusercontent.com/github-linguist/linguist/main/lib/linguist/languages.yml";
-    
+
     let response = client
         .get(url)
         .header("User-Agent", "neostats/1.0")
         .send()
         .await
         .context("Failed to fetch languages.yml")?;
-    
+
     if !response.status().is_success() {
         anyhow::bail!("Failed to fetch languages.yml: {}", response.status());
     }
-    
+
     let yaml_content = response
         .text()
         .await
         .context("Failed to read languages.yml content")?;
-    
-    let languages: HashMap<String, LanguageInfo> = serde_yaml::from_str(&yaml_content)
-        .context("Failed to parse languages.yml")?;
-    
+
+    let languages: HashMap<String, LanguageInfo> =
+        serde_yaml::from_str(&yaml_content).context("Failed to parse languages.yml")?;
+
     let mut color_map = HashMap::new();
     for (name, info) in languages {
         if let Some(color) = info.color {
             color_map.insert(name, color);
         }
     }
-    
+
     Ok(color_map)
 }
 
-fn get_language_color(language: &str, color_map: &HashMap<String, String>) -> String {
+fn get_language_color(
+    language: &str,
+    color_map: &HashMap<String, String>,
+    default_color: &str,
+) -> String {
     color_map
         .get(language)
         .cloned()
-        .unwrap_or_else(|| "#586e75".to_string()) // Default color
+        .unwrap_or_else(|| default_color.to_string())
 }
 
 fn save_language_data(data: &[LanguageStats], _username: &str, output_path: &str) -> Result<()> {
-    let yaml_content = serde_yaml::to_string(data)
-        .context("Failed to serialize language data to YAML")?;
-    
-    fs::write(output_path, yaml_content)
-        .context("Failed to write YAML file")?;
-    
+    let yaml_content =
+        serde_yaml::to_string(data).context("Failed to serialize language data to YAML")?;
+
+    fs::write(output_path, yaml_content).context("Failed to write YAML file")?;
+
     println!("Language data saved to: {}", output_path);
     Ok(())
 }
 
 fn load_language_data(input_path: &str) -> Result<Vec<LanguageStats>> {
-    let yaml_content = fs::read_to_string(input_path)
-        .context("Failed to read YAML file")?;
-    
-    let language_stats: Vec<LanguageStats> = serde_yaml::from_str(&yaml_content)
-        .context("Failed to parse YAML file")?;
-    
+    let yaml_content = fs::read_to_string(input_path).context("Failed to read YAML file")?;
+
+    let language_stats: Vec<LanguageStats> =
+        serde_yaml::from_str(&yaml_content).context("Failed to parse YAML file")?;
+
     println!("Language data loaded from: {}", input_path);
     Ok(language_stats)
 }
 
-fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
+fn generate_svg(_username: &str, languages: &[LanguageStats], theme: &Theme) -> String {
     let width = 300;
     let height = 195;
     let padding = 20;
@@ -248,42 +269,46 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
     let progress_bar_margin = 10;
     let item_height = 12;
     let item_spacing = 2;
-    
+
     let mut svg = String::new();
-    
+
     // SVG header and styles
     svg.push_str(&format!(
         r#"<svg width="{}" height="{}" viewBox="0 0 {} {}" fill="none" xmlns="http://www.w3.org/2000/svg">"#,
         width, height, width, height
     ));
-    
-    svg.push_str(r#"
-<style>
-.header { font: 600 18px 'Segoe UI', Ubuntu, Sans-Serif; fill: #2f80ed }
-    .lang-name { font: 400 11px 'Segoe UI', Ubuntu, Sans-Serif; fill: #434d58 }
-</style>"#);
-    
+
+    svg.push_str(&format!(
+        "\n<style>\n.header {{ font: 600 18px 'Segoe UI', Ubuntu, Sans-Serif; fill: {} }}\n    .lang-name {{ font: 400 11px 'Segoe UI', Ubuntu, Sans-Serif; fill: {} }}\n</style>",
+        theme.header_color, theme.text_color
+    ));
+
     // Background card
-        svg.push_str("<rect data-testid=\"card-bg\" x=\"0.5\" y=\"0.5\" rx=\"15\" ry=\"15\" height=\"99%\" stroke=\"#e4e2e2\" width=\"99%\" fill=\"#fffefe\" stroke-opacity=\"1\"/>");
-    
+    svg.push_str(&format!(
+            "<rect data-testid=\"card-bg\" x=\"0.5\" y=\"0.5\" rx=\"15\" ry=\"15\" height=\"99%\" stroke=\"{}\" width=\"99%\" fill=\"{}\" stroke-opacity=\"1\"/>",
+            theme.border_color,
+            theme.background_fill
+        ));
+
     // Title
     svg.push_str(&format!(
         "<g data-testid=\"card-title\" transform=\"translate({}, {})\"><text x=\"0\" y=\"0\" class=\"header\" data-testid=\"header\">Most Used Languages</text></g>",
         padding, padding + 15
     ));
-    
+
     // Progress bar background
     let bar_width = width - 2 * padding;
     let bar_width_f64 = bar_width as f64;
     let bar_y = padding + title_height + progress_bar_margin;
     svg.push_str(&format!(
-        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"#f6f8fa\"/>",
+        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"{}\"/>",
         padding,
         bar_y,
         bar_width,
         progress_bar_height,
         progress_bar_height / 2,
-        progress_bar_height / 2
+        progress_bar_height / 2,
+        theme.progress_background
     ));
 
     svg.push_str(&format!(
@@ -295,7 +320,7 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
         progress_bar_height / 2,
         progress_bar_height / 2
     ));
-    
+
     // Progress bar segments
     let mut current_x = padding as f64;
     let last_index = languages.len().saturating_sub(1);
@@ -317,23 +342,90 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
         current_x += segment_width;
     }
     svg.push_str("</g>");
-    
+
     let cols = 2;
     let col_width = (width - 2 * padding) / cols;
-    
+
     for (i, lang) in languages.iter().enumerate() {
         let col = i % cols;
         let row = i / cols;
         let x = padding + col * col_width;
-        let y = padding + title_height + progress_bar_height + progress_bar_margin * 2 + 15 + row * (item_height + item_spacing + 8);
-        
+        let y = padding
+            + title_height
+            + progress_bar_height
+            + progress_bar_margin * 2
+            + 15
+            + row * (item_height + item_spacing + 8);
+
         // Language circle and name
         svg.push_str(&format!(
             "<g transform=\"translate({}, {})\"><circle cx=\"5\" cy=\"6\" r=\"5\" fill=\"{}\"/><text data-testid=\"lang-name\" x=\"15\" y=\"10\" class=\"lang-name\">{} {:.1}%</text></g>",
             x, y, lang.color, lang.name, lang.percentage
         ));
     }
-    
+
     svg.push_str("</svg>");
     svg
+}
+
+fn load_theme(theme_name: &str) -> Result<Theme> {
+    let path = resolve_theme_path(theme_name)?;
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read theme file: {}", path.display()))?;
+    let theme: Theme = serde_yaml::from_str(&contents)
+        .with_context(|| format!("Failed to parse theme file: {}", path.display()))?;
+    Ok(theme)
+}
+
+fn resolve_theme_path(theme_name: &str) -> Result<PathBuf> {
+    let trimmed = theme_name.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Theme name cannot be empty");
+    }
+
+    let input_path = Path::new(trimmed);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    let mut push_candidate = |candidate: PathBuf| {
+        if !candidate.as_os_str().is_empty() {
+            candidates.push(candidate);
+        }
+    };
+
+    if input_path.extension().is_some() {
+        push_candidate(input_path.to_path_buf());
+        if !input_path.is_absolute() {
+            push_candidate(Path::new("themes").join(input_path));
+        }
+    } else {
+        push_candidate(input_path.to_path_buf());
+        if !input_path.is_absolute() {
+            push_candidate(Path::new("themes").join(input_path));
+        }
+
+        push_candidate(Path::new("themes").join(format!("{}.yaml", trimmed)));
+        push_candidate(Path::new("themes").join(format!("{}.yml", trimmed)));
+        push_candidate(PathBuf::from(format!("{}.yaml", trimmed)));
+        push_candidate(PathBuf::from(format!("{}.yml", trimmed)));
+
+        let lower = trimmed.to_lowercase();
+        if lower != trimmed {
+            push_candidate(Path::new("themes").join(&lower));
+            push_candidate(Path::new("themes").join(format!("{}.yaml", lower)));
+            push_candidate(Path::new("themes").join(format!("{}.yml", lower)));
+            push_candidate(PathBuf::from(format!("{}.yaml", lower)));
+            push_candidate(PathBuf::from(format!("{}.yml", lower)));
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    anyhow::bail!(
+        "Theme '{}' not found. Place a YAML file in the 'themes' directory or provide a valid path.",
+        theme_name
+    );
 }
