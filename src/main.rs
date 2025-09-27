@@ -260,12 +260,11 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
     svg.push_str(r#"
 <style>
 .header { font: 600 18px 'Segoe UI', Ubuntu, Sans-Serif; fill: #2f80ed }
-.lang-name { font: 400 11px 'Segoe UI', Ubuntu, Sans-Serif; fill: #434d58 }
-.lang-progress { rx: 5 }
+    .lang-name { font: 400 11px 'Segoe UI', Ubuntu, Sans-Serif; fill: #434d58 }
 </style>"#);
     
     // Background card
-    svg.push_str("<rect data-testid=\"card-bg\" x=\"0.5\" y=\"0.5\" rx=\"4.5\" height=\"99%\" stroke=\"#e4e2e2\" width=\"99%\" fill=\"#fffefe\" stroke-opacity=\"1\"/>");
+        svg.push_str("<rect data-testid=\"card-bg\" x=\"0.5\" y=\"0.5\" rx=\"15\" ry=\"15\" height=\"99%\" stroke=\"#e4e2e2\" width=\"99%\" fill=\"#fffefe\" stroke-opacity=\"1\"/>");
     
     // Title
     svg.push_str(&format!(
@@ -277,12 +276,28 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
     let bar_width = width - 2 * padding;
     let bar_y = padding + title_height + progress_bar_margin;
     svg.push_str(&format!(
-        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" fill=\"#f6f8fa\"/>",
-        padding, bar_y, bar_width, progress_bar_height, progress_bar_height / 2
+        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\" fill=\"#f6f8fa\"/>",
+        padding,
+        bar_y,
+        bar_width,
+        progress_bar_height,
+        progress_bar_height / 2,
+        progress_bar_height / 2
+    ));
+
+    svg.push_str(&format!(
+        "<defs><clipPath id=\"progress-clip\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\"/></clipPath></defs>",
+        padding,
+        bar_y,
+        bar_width,
+        progress_bar_height,
+        progress_bar_height / 2,
+        progress_bar_height / 2
     ));
     
     // Progress bar segments
     let mut current_x = padding as f64;
+    svg.push_str("<g clip-path=\"url(#progress-clip)\">");
     for lang in languages {
         let segment_width = (lang.percentage / 100.0) * bar_width as f64;
         if segment_width > 0.5 { // Only show segments that are visible
@@ -293,6 +308,7 @@ fn generate_svg(_username: &str, languages: &[LanguageStats]) -> String {
         }
         current_x += segment_width;
     }
+    svg.push_str("</g>");
     
     let cols = 2;
     let col_width = (width - 2 * padding) / cols;
