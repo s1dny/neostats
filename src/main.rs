@@ -261,12 +261,12 @@ fn load_language_data(input_path: &str) -> Result<Vec<LanguageStats>> {
 }
 
 fn generate_svg(_username: &str, languages: &[LanguageStats], theme: &Theme) -> String {
-    let width = 300;
+    let width = 320;
     let height = 195;
     let padding = 20;
-    let title_height = 25;
+    let title_height = 30;
     let progress_bar_height = 8;
-    let progress_bar_margin = 10;
+    let progress_bar_margin = 3;
     let item_height = 12;
     let item_spacing = 2;
 
